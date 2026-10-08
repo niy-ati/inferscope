@@ -146,7 +146,9 @@ def perf(variant: str, levels: list[int], n: int) -> None:
     out: dict[str, Any] = {"variant": variant, "levels": {}, "hw_at_run": probe_hw()}
     with _server(variant) as srv:
         out["server"] = {"startup_s": round(srv.started_s, 1), **srv.info}
-        _replay(srv, reqs[:4], 2)  # warm-up (CUDA graphs, allocator)
+        # warm-up at both ends of the batch range (CUDA graphs, compile, allocator)
+        _replay(srv, reqs[:4], 1)
+        _replay(srv, reqs[:8], 8)
         for c in levels:
             summary, res = _replay(srv, reqs * max(1, (2 * c + len(reqs) - 1) // len(reqs)), c)
             out["levels"][c] = summary
