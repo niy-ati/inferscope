@@ -28,20 +28,43 @@ The card sustains about 70% of its datasheet bandwidth and 57% of its compute. T
 
 ## Results
 
-### Serving Qwen3-1.7B (bf16) on vLLM 0.31
+### Serving on vLLM 0.31: Qwen3-1.7B (bf16) vs Qwen3-4B (AWQ, 4-bit)
 
-32 requests per concurrency level, closed loop.
+32 requests per concurrency level, closed loop. Results: [`perf_qwen3-1.7b-bf16.json`](results/perf_qwen3-1.7b-bf16.json), [`perf_qwen3-4b-awq.json`](results/perf_qwen3-4b-awq.json).
 
-| Concurrency | Output tok/s | TTFT p50 / p95 | TPOT p50 | E2E p95 |
+| | Qwen3-1.7B bf16 | Qwen3-4B AWQ |
+|---|---|---|
+| Weights | 3.22 GiB | 2.50 GiB |
+| KV cache that fits | 12,608 tokens | 10,496 tokens |
+| Decode floor (weights ÷ 117 GB/s) | 29.5 ms/token | 22.9 ms/token |
+
+Output throughput (tok/s) and median time per output token:
+
+| Concurrency | bf16 tok/s | AWQ tok/s | bf16 TPOT | AWQ TPOT |
 |---|---|---|---|---|
-| 2 | 57.1 | 197 / 335 ms | 33.7 ms | 16.1 s |
-| 4 | 90.4 | 228 / 489 ms | 37.4 ms | 18.2 s |
-| 8 | 123.1 | 236 / 946 ms | 41.2 ms | 20.3 s |
-| 16 | 132.3 | 1,919 / 10,347 ms | 43.8 ms | 30.8 s |
+| 1 | 21.0 † | 38.0 | 45.8 ms † | 24.9 ms |
+| 2 | 57.4 | 63.3 | 33.3 ms | 29.6 ms |
+| 4 | 96.4 | 104.4 | 35.4 ms | 32.4 ms |
+| 8 | 127.9 | 138.6 | 39.2 ms | 36.3 ms |
+| 16 | 150.3 | 151.5 | 44.7 ms | 44.3 ms |
 
-- **Decode is bandwidth-bound.** From 2 to 8 concurrent requests, per-token latency rises only 22% while throughput more than doubles. Each extra sequence rides on the same weight read.
-- **The KV cache is the ceiling.** After weights and CUDA graphs, about 8,000 tokens of KV cache fit, which is roughly two worst-case requests. At 16 concurrent requests, throughput gains only 7% while median time-to-first-token rises 8×, because requests queue for cache space. On this card, 8 is the sensible limit.
-- The concurrency-1 run is being re-measured. Its total time doesn't match its own per-token latency, which points to warm-up compilation, not serving cost.
+Time to first token, p50 / p95:
+
+| Concurrency | bf16 | AWQ |
+|---|---|---|
+| 1 | 357 / 908 ms | 166 / 512 ms |
+| 4 | 179 / 321 ms | 260 / 595 ms |
+| 8 | 213 / 852 ms | 341 / 1,605 ms |
+| 16 | 793 / 1,664 ms | 2,343 / 6,300 ms |
+
+- **Decode is bandwidth-bound, and the model predicts it.** AWQ's single-request decode (24.9 ms) is within 9% of the weight-read floor. From 2 to 8 concurrent requests, per-token latency rises only about 20% while throughput more than doubles, because each extra sequence rides on the same weight read.
+- **A 4-bit 4B model decodes faster than a bf16 1.7B one.** It reads fewer bytes per token: 2.5 vs 3.2 GiB. AWQ leads at every concurrency up to 8. At 16, both hit the same ceiling.
+- **Prefill is where AWQ pays.** Its time to first token is higher from concurrency 4 up, because 4-bit weights are dequantized in compute-bound prefill. At 16, the smaller KV cache also makes requests queue: p95 is 6.3 s vs 1.7 s.
+- **The KV cache is the hard limit.** About 2.5–3 worst-case requests fit at once. Past 8 concurrent requests, throughput gains little and first-token latency climbs, so on this card 8 is the sensible limit.
+
+† **Unresolved:** bf16 at concurrency 1 decodes at 45.8 ms/token, 55% above its floor and slower than two requests at once. That shouldn't happen on a bandwidth-bound GPU. A longer warm-up removed the first-token stalls but not this. The leading suspect is the laptop GPU dropping clocks at light load. Run-to-run variance is also visible elsewhere: an earlier bf16 run got 7,984 tokens of KV cache, against 12,608 here, at the same memory setting. Repeated runs are planned before these numbers are treated as final.
+
+Quality is not measured yet, so these tables say nothing about whether AWQ does PulseLoop's job as well. That's the next experiment.
 
 ### Fused MoE kernel (Triton)
 
@@ -60,7 +83,8 @@ Outputs match the reference within 0.1% relative error. Full table: [`results/mo
 
 ### In progress
 
-- Qwen3-4B-AWQ and FP8 / GPTQ W4A16 variants of Qwen3-1.7B on the same sweep
+- Repeated runs, and the bf16 concurrency-1 anomaly
+- FP8 / GPTQ W4A16 variants of Qwen3-1.7B on the same sweep
 - GPTQ calibrated on generic text vs. on the workload itself
 - Prefix caching on vs. off, in the trace's real request order
 - Cost of JSON-schema guided decoding
