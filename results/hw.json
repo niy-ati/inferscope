@@ -1,0 +1,11 @@
+{
+  "name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+  "vram_gb": 5.99951171875,
+  "spec_bw_gbs": 168.0,
+  "spec_fp16_tflops": 21.5,
+  "meas_bw_gbs": 111.3,
+  "meas_read_bw_gbs": 116.6,
+  "meas_fp16_tflops": 12.17,
+  "sm_clock_mhz": 2100,
+  "power_limit_w": null
+}

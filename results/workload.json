@@ -1,0 +1,23 @@
+{
+  "requests": 74,
+  "by_purpose": {
+    "planner": 18,
+    "copy": 30,
+    "captions": 11,
+    "judge": 13,
+    "video-director": 2
+  },
+  "prompt_tokens": {
+    "min": 270,
+    "p50": 495,
+    "p95": 1128,
+    "max": 1971
+  },
+  "output_tokens": {
+    "min": 72,
+    "p50": 245,
+    "p95": 703,
+    "max": 1751
+  },
+  "shared_prefix_token_share": 0.39047507055503294
+}
