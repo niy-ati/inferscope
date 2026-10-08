@@ -1,0 +1,21 @@
+[project]
+name = "inferscope"
+version = "0.1.0"
+description = "Serving a real LLM workload on a 6 GB laptop GPU: model vs measurement."
+requires-python = ">=3.11"
+dependencies = [
+    "vllm>=0.31",
+    "torch",
+    "triton",
+    "httpx",
+    "jsonschema",
+    "matplotlib",
+    "pyarrow",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["inferscope"]
