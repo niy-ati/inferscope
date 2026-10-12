@@ -64,7 +64,7 @@ def workload_nll(llm: Any, tok: Any, trace: list[dict[str, Any]], max_len: int) 
     return nll / n
 
 
-def generate_json(llm: Any, tok: Any, trace: list[dict[str, Any]], guided: bool, compact: bool = False) -> list[str]:
+def generate_json(llm: Any, tok: Any, trace: list[dict[str, Any]], guided: bool, compact: bool = False, max_len: int = 4096) -> list[str]:
     """compact: forbid free whitespace between JSON tokens. The JSON grammar
     allows unlimited whitespace, and a small model can loop on it until
     max_tokens, which leaves an unterminated object."""
@@ -72,7 +72,10 @@ def generate_json(llm: Any, tok: Any, trace: list[dict[str, Any]], guided: bool,
 
     params = []
     for req in trace:
-        kw: dict[str, Any] = {"temperature": 0.0, "max_tokens": max(256, 2 * req["output_tokens"])}
+        # Mirror production: PulseLoop allows up to 8,000 output tokens, so the
+        # only limit here is what is left of the 4,096-token context. (A 2x
+        # reference-length cap blamed verbose models for a limit production lacks.)
+        kw: dict[str, Any] = {"temperature": 0.0, "max_tokens": max(256, max_len - req["prompt_tokens"] - 8)}
         if guided:
             try:
                 from vllm.sampling_params import GuidedDecodingParams
