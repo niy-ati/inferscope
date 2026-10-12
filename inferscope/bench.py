@@ -189,6 +189,8 @@ KV_CONFIGS: dict[str, dict[str, Any]] = {
     "triton_bf16_kv": {"prefix_cache": True, "extra": ["--attention-backend", "TRITON_ATTN"]},
     "flashinfer_bf16_kv": {"prefix_cache": True, "extra": ["--attention-backend", "FLASHINFER"]},
     "flashinfer_fp8_kv": {"prefix_cache": True, "kv_dtype": "fp8", "extra": ["--attention-backend", "FLASHINFER"]},
+    # SGLang tuning pass: its static memory fraction excludes activations, so it can go higher
+    "prefix_on_mem86": {"prefix_cache": True, "util": 0.86},
 }
 
 

@@ -20,25 +20,29 @@ from pathlib import Path
 import httpx
 
 
-def server_env(exe: str) -> dict[str, str]:
-    """No system CUDA toolkit here, but the engines' venvs ship nvcc in the
-    nvidia-cuda-nvcc wheel. FlashInfer JIT-compiles kernels at startup (FP8
-    KV cache attention; SGLang) and finds nvcc through CUDA_HOME.
+def server_env(cuda_home: Path | None) -> dict[str, str]:
+    """No system CUDA toolkit or g++ here. FlashInfer JIT-compiles kernels at
+    startup (FP8 KV cache attention in vLLM; SGLang always), and its CCCL
+    headers insist that nvcc matches the CUDA headers the engine's torch was
+    built with: CUDA 13.0 for vLLM (pip wheels), 12.8 for SGLang (conda-forge).
     The sampler stays on vLLM's PyTorch path so every run uses the same one."""
     env = {**os.environ, "PYTHONUNBUFFERED": "1", "VLLM_USE_FLASHINFER_SAMPLER": "0", "VLLM_SERVER_DEV_MODE": "1"}
-    venv = Path(exe).expanduser().parent.parent if "/" in exe else Path(os.environ.get("VIRTUAL_ENV", ""))
-    if "CUDA_HOME" in os.environ:  # e.g. an nvcc that matches the CUDA headers torch ships
-        env["PATH"] = f"{os.environ['CUDA_HOME']}/bin:{env.get('PATH', '')}"
-    for cuda in sorted(venv.glob("lib/python3*/site-packages/nvidia/cu1*")):
-        if (cuda / "bin" / "nvcc").exists() and "CUDA_HOME" not in os.environ:
-            env["CUDA_HOME"] = str(cuda)
-            env["PATH"] = f"{cuda / 'bin'}:{env.get('PATH', '')}"
+    if cuda_home and (cuda_home / "bin" / "nvcc").exists():
+        env["CUDA_HOME"] = str(cuda_home)
+        env["PATH"] = f"{cuda_home / 'bin'}:{env.get('PATH', '')}"
+        if (cuda_home / "targets/x86_64-linux/include").exists():  # conda layout
+            env["CPATH"] = f"{cuda_home / 'targets/x86_64-linux/include'}:{env.get('CPATH', '')}"
     # The system gcc has no C++ front end (cc1plus). Use a conda-forge
     # toolchain when there is one: FlashInfer passes CC to nvcc as -ccbin.
     if not shutil.which("g++") and "CXX" not in os.environ:
         for gxx in sorted(Path.home().glob("mamba/envs/*/bin/x86_64-conda-linux-gnu-g++")):
             env["CXX"], env["CC"] = str(gxx), str(gxx.with_name("x86_64-conda-linux-gnu-gcc"))
+            # SGLang's own JIT builds ignore CC/CXX; nvcc honours this for every call.
+            env["NVCC_PREPEND_FLAGS"] = f"-ccbin {gxx} {env.get('NVCC_PREPEND_FLAGS', '')}".strip()
             break
+    # SGLang's sgl-kernel links libnuma, which this system lacks; conda-forge ships it.
+    for numa in sorted(Path.home().glob("mamba/envs/*/lib/libnuma.so.1"))[:1]:
+        env["LD_LIBRARY_PATH"] = f"{numa.parent}:{env.get('LD_LIBRARY_PATH', '')}"
     return env
 
 
@@ -51,6 +55,7 @@ class Server:
     proc: subprocess.Popen | None = None
     started_s: float = 0.0
     info: dict = field(default_factory=dict)
+    cuda_home: Path | None = None
 
     @property
     def url(self) -> str:
@@ -60,7 +65,7 @@ class Server:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         log = open(self.log_path, "w")
         t0 = time.time()
-        self.proc = subprocess.Popen(self.cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=server_env(self.cmd[0]))
+        self.proc = subprocess.Popen(self.cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=server_env(self.cuda_home))
         while time.time() - t0 < timeout:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"{self.engine} exited early, see {self.log_path}:\n" + self.log_path.read_text()[-3000:])
@@ -115,7 +120,12 @@ def vllm(model: str, port: int, log: Path, *, max_len: int = 8192, util: float =
         cmd += ["--quantization", quantization]
     if eager:
         cmd += ["--enforce-eager"]
-    return Server("vllm", cmd + (extra or []), port, log)
+    return Server("vllm", cmd + (extra or []), port, log, cuda_home=_toolkit("INFERSCOPE_CUDA_VLLM", "~/inferscope/cuda130/nvidia/cu13"))
+
+
+def _toolkit(var: str, default: str) -> Path | None:
+    p = Path(os.path.expanduser(os.getenv(var, default)))
+    return p if p.exists() else None
 
 
 SGLANG_PY = os.path.expanduser(os.getenv("INFERSCOPE_SGLANG_PY", "~/inferscope/.venv-sglang/bin/python"))
@@ -132,7 +142,7 @@ def sglang(model: str, port: int, log: Path, *, max_len: int = 8192, mem: float 
         cmd += ["--disable-radix-cache"]
     if quantization:
         cmd += ["--quantization", quantization]
-    return Server("sglang", cmd + (extra or []), port, log)
+    return Server("sglang", cmd + (extra or []), port, log, cuda_home=_toolkit("INFERSCOPE_CUDA_SGLANG", "~/mamba/envs/cuda128"))
 
 
 def llamacpp(gguf: str, port: int, log: Path, *, ctx: int = 8192, parallel: int = 8, binary: str = "llama-server") -> Server:
