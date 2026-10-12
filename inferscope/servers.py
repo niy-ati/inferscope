@@ -118,16 +118,23 @@ def _wait_gpu_free(limit_mib: int = 400, timeout: float = 60) -> None:
 
 
 class GpuSampler:
-    """Peak GPU memory and mean utilisation while a benchmark runs."""
+    """Peak GPU memory, utilisation, clocks and power while a benchmark runs.
+    Clocks and throttle reasons matter on a laptop: the driver lowers clocks
+    at light load and under power or thermal limits."""
+
+    FIELDS = "memory.used,utilization.gpu,clocks.sm,clocks.mem,power.draw,temperature.gpu,clocks_event_reasons.active"
 
     def __init__(self, every: float = 0.25):
-        self.every, self.peak_mib, self.util, self._stop = every, 0, [], threading.Event()
+        self.every, self.peak_mib, self.rows, self._stop = every, 0, [], threading.Event()
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used,utilization.gpu", "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout
-            mem, util = (int(x) for x in out.strip().splitlines()[0].split(","))
-            self.peak_mib, _ = max(self.peak_mib, mem), self.util.append(util)
+            out = subprocess.run(["nvidia-smi", f"--query-gpu={self.FIELDS}", "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout
+            f = [x.strip() for x in out.strip().splitlines()[0].split(",")]
+            mem, util, sm, memclk = (int(float(x)) for x in f[:4])
+            power = float(f[4]) if f[4].replace(".", "", 1).isdigit() else 0.0
+            self.peak_mib = max(self.peak_mib, mem)
+            self.rows.append((util, sm, memclk, power, int(f[5]), int(f[6], 16)))
             time.sleep(self.every)
 
     def __enter__(self) -> "GpuSampler":
@@ -141,4 +148,20 @@ class GpuSampler:
 
     @property
     def mean_util(self) -> float:
-        return sum(self.util) / len(self.util) if self.util else 0.0
+        return sum(r[0] for r in self.rows) / len(self.rows) if self.rows else 0.0
+
+    def summary(self) -> dict:
+        if not self.rows:
+            return {}
+        n = len(self.rows)
+        busy = [r for r in self.rows if r[0] > 50] or self.rows  # ignore idle gaps between requests
+        reasons = 0
+        for r in busy:
+            reasons |= r[5]
+        return {"gpu_util_mean": round(sum(r[0] for r in self.rows) / n, 1),
+                "sm_clock_mean_mhz": round(sum(r[1] for r in busy) / len(busy)),
+                "sm_clock_min_mhz": min(r[1] for r in busy),
+                "mem_clock_mean_mhz": round(sum(r[2] for r in busy) / len(busy)),
+                "power_mean_w": round(sum(r[3] for r in busy) / len(busy), 1),
+                "temp_max_c": max(r[4] for r in self.rows),
+                "throttle_reasons": hex(reasons)}

@@ -137,7 +137,7 @@ def _sample(trace: list[dict[str, Any]], n: int, seed: int = 0) -> list[dict[str
 def _replay(srv: servers.Server, reqs: list[dict[str, Any]], c: int, **kw: Any) -> dict[str, Any]:
     with servers.GpuSampler() as gpu:
         res, wall = asyncio.run(loadgen.replay(srv.url, srv.model_id(), reqs, c, **kw))
-    return {**loadgen.summarize(res, wall), "gpu_peak_mib": gpu.peak_mib, "gpu_util_mean": round(gpu.mean_util, 1)}, res
+    return {**loadgen.summarize(res, wall), "gpu_peak_mib": gpu.peak_mib, **gpu.summary()}, res
 
 
 def perf(variant: str, levels: list[int], n: int) -> None:
