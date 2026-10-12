@@ -30,6 +30,7 @@ class Result:
     purpose: str
     prompt_tokens: int = 0
     output_tokens: int = 0
+    cached_tokens: int = 0  # prompt tokens served from the engine's prefix cache
     ttft_s: float = 0.0
     e2e_s: float = 0.0
     itl_s: list[float] = field(default_factory=list)  # gaps between streamed chunks
@@ -83,6 +84,7 @@ async def _one(client: httpx.AsyncClient, url: str, req: dict[str, Any], body: d
                 if chunk.get("usage"):
                     r.prompt_tokens = chunk["usage"].get("prompt_tokens", 0)
                     r.output_tokens = chunk["usage"].get("completion_tokens", 0)
+                    r.cached_tokens = (chunk["usage"].get("prompt_tokens_details") or {}).get("cached_tokens") or 0
                 for ch in chunk.get("choices") or []:
                     delta = (ch.get("delta") or {}).get("content")
                     if delta:
@@ -156,6 +158,7 @@ def summarize(results: list[Result], wall: float) -> dict[str, Any]:
         "e2e_p95_s": round(pct([r.e2e_s for r in ok], 95), 2),
         "mean_prompt_tokens": round(statistics.mean([r.prompt_tokens for r in ok]), 1) if ok else 0,
         "mean_output_tokens": round(statistics.mean([r.output_tokens for r in ok]), 1) if ok else 0,
+        "cached_prompt_share": round(sum(r.cached_tokens for r in ok) / max(1, sum(r.prompt_tokens for r in ok)), 3),
     }
 
 

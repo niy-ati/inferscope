@@ -123,10 +123,18 @@ def _save(name: str, obj: Any) -> None:
     (RESULTS / name).write_text(json.dumps(obj, indent=2), encoding="utf-8")
 
 
-def _server(variant: str, **kw: Any) -> servers.Server:
+def _server(variant: str, engine: str = "vllm", **kw: Any) -> servers.Server:
     v = VARIANTS[variant]
     kw.setdefault("max_len", 4096)  # longest request: 1971 prompt + 1751 output tokens
-    return servers.vllm(str(MODELS / v["model"]), PORT, RESULTS / "logs" / f"{variant}{kw.pop('tag', '')}.log", quantization=v.get("quantization"), **kw)
+    log = RESULTS / "logs" / f"{engine}-{variant}{kw.pop('tag', '')}.log"
+    if engine == "sglang":
+        if kw.get("kv_dtype") == "fp8":
+            kw["kv_dtype"] = "fp8_e5m2"
+        if "util" in kw:
+            kw["mem"] = kw.pop("util")
+        # SGLang reads AWQ from the checkpoint config; FP8 weight-only has no Ampere path there
+        return servers.sglang(str(MODELS / v["model"]), PORT, log, **kw)
+    return servers.vllm(str(MODELS / v["model"]), PORT, log, quantization=v.get("quantization"), **kw)
 
 
 def _sample(trace: list[dict[str, Any]], n: int, seed: int = 0) -> list[dict[str, Any]]:
@@ -136,15 +144,15 @@ def _sample(trace: list[dict[str, Any]], n: int, seed: int = 0) -> list[dict[str
 
 def _replay(srv: servers.Server, reqs: list[dict[str, Any]], c: int, **kw: Any) -> dict[str, Any]:
     with servers.GpuSampler() as gpu:
-        res, wall = asyncio.run(loadgen.replay(srv.url, srv.model_id(), reqs, c, **kw))
+        res, wall = asyncio.run(loadgen.replay(srv.url, srv.model_id(), reqs, c, engine=srv.engine, **kw))
     return {**loadgen.summarize(res, wall), "gpu_peak_mib": gpu.peak_mib, **gpu.summary()}, res
 
 
-def perf(variant: str, levels: list[int], n: int) -> None:
+def perf(variant: str, levels: list[int], n: int, engine: str = "vllm") -> None:
     trace = load_trace()
     reqs = _sample(trace, n)
-    out: dict[str, Any] = {"variant": variant, "levels": {}, "hw_at_run": probe_hw()}
-    with _server(variant) as srv:
+    out: dict[str, Any] = {"variant": variant, "engine": engine, "levels": {}, "hw_at_run": probe_hw()}
+    with _server(variant, engine) as srv:
         out["server"] = {"startup_s": round(srv.started_s, 1), **srv.info}
         # warm-up at both ends of the batch range (CUDA graphs, compile, allocator)
         _replay(srv, reqs[:4], 1)
@@ -153,7 +161,7 @@ def perf(variant: str, levels: list[int], n: int) -> None:
             summary, res = _replay(srv, reqs * max(1, (2 * c + len(reqs) - 1) // len(reqs)), c)
             out["levels"][c] = summary
             print(variant, f"c={c}", json.dumps(summary))
-    _save(f"perf_{variant}.json", out)
+    _save(f"perf_{variant}.json" if engine == "vllm" else f"perf_{engine}_{variant}.json", out)
 
 
 def prefix(variant: str, c: int, n: int) -> None:
@@ -168,6 +176,49 @@ def prefix(variant: str, c: int, n: int) -> None:
             out["on" if on else "off"] = summary
             print("prefix", on, json.dumps(summary))
     _save(f"prefix_{variant}.json", out)
+
+
+KV_CONFIGS: dict[str, dict[str, Any]] = {
+    "prefix_off": {"prefix_cache": False},
+    "prefix_on": {"prefix_cache": True},
+    # Attention backends on Ampere (sm_86). FlashAttention (the default) has no
+    # FP8 KV cache, and vLLM's Triton backend needs native FP8 (sm_89+). Only
+    # FlashInfer takes FP8 KV here, so the FP8 A/B runs both arms on it. It
+    # JIT-compiles with nvcc, which must match the CUDA headers torch ships
+    # (CCCL checks): run with CUDA_HOME pointing at a matching nvcc.
+    "triton_bf16_kv": {"prefix_cache": True, "extra": ["--attention-backend", "TRITON_ATTN"]},
+    "flashinfer_bf16_kv": {"prefix_cache": True, "extra": ["--attention-backend", "FLASHINFER"]},
+    "flashinfer_fp8_kv": {"prefix_cache": True, "kv_dtype": "fp8", "extra": ["--attention-backend", "FLASHINFER"]},
+}
+
+
+def kv(variant: str, levels: list[int], configs: list[str], engine: str = "vllm") -> None:
+    """KV-cache study: prefix caching off / on, and an FP8 KV cache, on the
+    whole trace in its real arrival order (shared system prompts recur the
+    way they do in production). Each level starts with a cold prefix cache."""
+    reqs = load_trace()
+    path = RESULTS / (f"kv_{variant}.json" if engine == "vllm" else f"kv_{engine}_{variant}.json")
+    out: dict[str, Any] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"variant": variant, "engine": engine, "configs": {}}
+    out["hw_at_run"] = probe_hw()
+    for name in configs:
+        with _server(variant, engine, tag=f"-kv-{name}", **KV_CONFIGS[name]) as srv:
+            res: dict[str, Any] = {"server": {"startup_s": round(srv.started_s, 1), **srv.info}, "levels": {}}
+            warm = [{**r, "system": "warm-up " + r["system"]} for r in reqs[:8]]  # warm kernels, not the cache
+            _replay(srv, warm[:4], 1)
+            _replay(srv, warm, 8)
+            for c in levels:
+                if KV_CONFIGS[name]["prefix_cache"]:
+                    srv.reset_prefix_cache()
+                if engine == "vllm":
+                    q0, h0 = srv.prefix_counters()
+                summary, _ = _replay(srv, reqs, c)
+                if engine == "vllm":  # cross-check of cached_prompt_share from the engine's own counters
+                    q1, h1 = srv.prefix_counters()
+                    summary["prefix_hit_rate"] = round((h1 - h0) / (q1 - q0), 3) if q1 > q0 else 0.0
+                res["levels"][c] = summary
+                print(variant, name, f"c={c}", json.dumps(summary), flush=True)
+            out["configs"][name] = res
+            _save(path.name, out)
 
 
 def guided(variant: str, c: int, n: int) -> None:
@@ -194,7 +245,7 @@ def quality(variant: str, wikitext: str, baseline: str | None) -> None:
     v = VARIANTS[variant]
     path = str(MODELS / v["model"])
     tok = AutoTokenizer.from_pretrained(MODELS / "Qwen3-1.7B")
-    llm = LLM(path, quantization=v.get("quantization"), max_model_len=4096, gpu_memory_utilization=0.85, enable_prefix_caching=False)
+    llm = LLM(path, quantization=v.get("quantization"), max_model_len=4096, gpu_memory_utilization=0.82, max_num_seqs=16, enable_prefix_caching=False)
     trace = eval_split(load_trace())
     out: dict[str, Any] = {"variant": variant, "eval_requests": len(trace)}
     out["wikitext_ppl"] = round(q.wikitext_ppl(llm, tok, Path(wikitext).read_text(encoding="utf-8")), 3)
@@ -205,9 +256,11 @@ def quality(variant: str, wikitext: str, baseline: str | None) -> None:
         base_free, base_guided = b["free"], b["guided"]
     free = q.generate_json(llm, tok, trace, guided=False)
     gd = q.generate_json(llm, tok, trace, guided=True)
-    _save(f"gen_{variant}.json", {"free": free, "guided": gd})
+    gc = q.generate_json(llm, tok, trace, guided=True, compact=True)
+    _save(f"gen_{variant}.json", {"free": free, "guided": gd, "guided_compact": gc})
     out["json_free"] = q.json_scores(trace, free, base_free)
     out["json_guided"] = q.json_scores(trace, gd, base_guided)
+    out["json_guided_compact"] = q.json_scores(trace, gc)
     print(json.dumps(out))
     _save(f"quality_{variant}.json", out)
 
@@ -219,10 +272,12 @@ def hw() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["prep", "hw", "perf", "prefix", "guided", "quality"])
+    ap.add_argument("cmd", choices=["prep", "hw", "perf", "prefix", "kv", "guided", "quality"])
     ap.add_argument("--variant", default="qwen3-1.7b-bf16")
     ap.add_argument("--concurrency", default="1,2,4,8,16")
     ap.add_argument("-c", type=int, default=4)
+    ap.add_argument("--configs", default="prefix_off,prefix_on")
+    ap.add_argument("--engine", choices=["vllm", "sglang"], default="vllm")
     ap.add_argument("-n", type=int, default=32)
     ap.add_argument("--wikitext", default=str(DATA / "wikitext2_test.txt"))
     ap.add_argument("--baseline", default="qwen3-1.7b-bf16")
@@ -232,9 +287,11 @@ def main() -> None:
     elif a.cmd == "hw":
         hw()
     elif a.cmd == "perf":
-        perf(a.variant, [int(x) for x in a.concurrency.split(",")], a.n)
+        perf(a.variant, [int(x) for x in a.concurrency.split(",")], a.n, a.engine)
     elif a.cmd == "prefix":
         prefix(a.variant, a.c, a.n)
+    elif a.cmd == "kv":
+        kv(a.variant, [int(x) for x in a.concurrency.split(",")], a.configs.split(","), a.engine)
     elif a.cmd == "guided":
         guided(a.variant, a.c, a.n)
     else:

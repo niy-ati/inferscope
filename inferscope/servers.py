@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import signal
 import subprocess
 import threading
@@ -17,6 +18,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import httpx
+
+
+def server_env(exe: str) -> dict[str, str]:
+    """No system CUDA toolkit here, but the engines' venvs ship nvcc in the
+    nvidia-cuda-nvcc wheel. FlashInfer JIT-compiles kernels at startup (FP8
+    KV cache attention; SGLang) and finds nvcc through CUDA_HOME.
+    The sampler stays on vLLM's PyTorch path so every run uses the same one."""
+    env = {**os.environ, "PYTHONUNBUFFERED": "1", "VLLM_USE_FLASHINFER_SAMPLER": "0", "VLLM_SERVER_DEV_MODE": "1"}
+    venv = Path(exe).expanduser().parent.parent if "/" in exe else Path(os.environ.get("VIRTUAL_ENV", ""))
+    if "CUDA_HOME" in os.environ:  # e.g. an nvcc that matches the CUDA headers torch ships
+        env["PATH"] = f"{os.environ['CUDA_HOME']}/bin:{env.get('PATH', '')}"
+    for cuda in sorted(venv.glob("lib/python3*/site-packages/nvidia/cu1*")):
+        if (cuda / "bin" / "nvcc").exists() and "CUDA_HOME" not in os.environ:
+            env["CUDA_HOME"] = str(cuda)
+            env["PATH"] = f"{cuda / 'bin'}:{env.get('PATH', '')}"
+    # The system gcc has no C++ front end (cc1plus). Use a conda-forge
+    # toolchain when there is one: FlashInfer passes CC to nvcc as -ccbin.
+    if not shutil.which("g++") and "CXX" not in os.environ:
+        for gxx in sorted(Path.home().glob("mamba/envs/*/bin/x86_64-conda-linux-gnu-g++")):
+            env["CXX"], env["CC"] = str(gxx), str(gxx.with_name("x86_64-conda-linux-gnu-gcc"))
+            break
+    return env
 
 
 @dataclass
@@ -37,8 +60,7 @@ class Server:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         log = open(self.log_path, "w")
         t0 = time.time()
-        # FlashInfer's sampler JIT-compiles with nvcc, which this machine lacks; vLLM falls back to its PyTorch sampler.
-        self.proc = subprocess.Popen(self.cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env={**os.environ, "PYTHONUNBUFFERED": "1", "VLLM_USE_FLASHINFER_SAMPLER": "0"})
+        self.proc = subprocess.Popen(self.cmd, stdout=log, stderr=subprocess.STDOUT, start_new_session=True, env=server_env(self.cmd[0]))
         while time.time() - t0 < timeout:
             if self.proc.poll() is not None:
                 raise RuntimeError(f"{self.engine} exited early, see {self.log_path}:\n" + self.log_path.read_text()[-3000:])
@@ -52,6 +74,18 @@ class Server:
             time.sleep(2)
         self.stop()
         raise TimeoutError(f"{self.engine} did not come up in {timeout}s")
+
+    def reset_prefix_cache(self) -> None:
+        """Start a measurement with a cold prefix cache."""
+        path = "/flush_cache" if self.engine == "sglang" else "/reset_prefix_cache"  # vLLM: dev-mode endpoint
+        httpx.post(self.url + path, timeout=30).raise_for_status()
+
+    def prefix_counters(self) -> tuple[float, float]:
+        """(queried, hit) prompt tokens, from vLLM's Prometheus metrics."""
+        text = httpx.get(self.url + "/metrics", timeout=10).text
+        def total(name: str) -> float:
+            return sum(float(line.rsplit(" ", 1)[1]) for line in text.splitlines() if line.startswith(name + "{") or line.startswith(name + " "))
+        return total("vllm:prefix_cache_queries_total"), total("vllm:prefix_cache_hits_total")
 
     def model_id(self) -> str:
         return httpx.get(self.url + "/v1/models", timeout=10).json()["data"][0]["id"]
@@ -75,13 +109,30 @@ class Server:
 def vllm(model: str, port: int, log: Path, *, max_len: int = 8192, util: float = 0.82, prefix_cache: bool = True,
          quantization: str | None = None, kv_dtype: str = "auto", max_seqs: int = 32, eager: bool = False, extra: list[str] | None = None) -> Server:
     cmd = ["vllm", "serve", model, "--port", str(port), "--max-model-len", str(max_len), "--gpu-memory-utilization", str(util),
-           "--max-num-seqs", str(max_seqs), "--kv-cache-dtype", kv_dtype,
+           "--max-num-seqs", str(max_seqs), "--kv-cache-dtype", kv_dtype, "--enable-prompt-tokens-details",
            "--enable-prefix-caching" if prefix_cache else "--no-enable-prefix-caching"]
     if quantization:
         cmd += ["--quantization", quantization]
     if eager:
         cmd += ["--enforce-eager"]
     return Server("vllm", cmd + (extra or []), port, log)
+
+
+SGLANG_PY = os.path.expanduser(os.getenv("INFERSCOPE_SGLANG_PY", "~/inferscope/.venv-sglang/bin/python"))
+
+
+def sglang(model: str, port: int, log: Path, *, max_len: int = 8192, mem: float = 0.82, prefix_cache: bool = True,
+           quantization: str | None = None, kv_dtype: str = "auto", max_seqs: int = 32, extra: list[str] | None = None) -> Server:
+    """SGLang in its own venv (its pinned torch differs from vLLM's). Prefix
+    reuse is RadixAttention; --enable-cache-report puts cached_tokens in usage."""
+    cmd = [SGLANG_PY, "-m", "sglang.launch_server", "--model-path", model, "--port", str(port), "--context-length", str(max_len),
+           "--mem-fraction-static", str(mem), "--max-running-requests", str(max_seqs), "--kv-cache-dtype", kv_dtype,
+           "--enable-cache-report", "--enable-metrics"]
+    if not prefix_cache:
+        cmd += ["--disable-radix-cache"]
+    if quantization:
+        cmd += ["--quantization", quantization]
+    return Server("sglang", cmd + (extra or []), port, log)
 
 
 def llamacpp(gguf: str, port: int, log: Path, *, ctx: int = 8192, parallel: int = 8, binary: str = "llama-server") -> Server:
@@ -103,6 +154,13 @@ def parse_log(engine: str, text: str) -> dict:
             info["max_concurrency"] = float(m.group(2))
         if m := re.search(r"Graph capturing finished in ([\d.]+) secs?, took ([\d.]+) GiB", text):
             info["cudagraph_gib"] = float(m.group(2))
+    elif engine == "sglang":
+        if m := re.search(r"Load weight end.*?mem usage=([\d.]+) GB", text):
+            info["weights_gib"] = float(m.group(1))
+        if m := re.search(r"max_total_num_tokens=(\d+)", text):
+            info["kv_cache_tokens"] = int(m.group(1))
+        if m := re.search(r"KV Cache is allocated\..*?K size: ([\d.]+) GB, V size: ([\d.]+) GB", text):
+            info["kv_cache_gib"] = round(float(m.group(1)) + float(m.group(2)), 2)
     return info
 
 
