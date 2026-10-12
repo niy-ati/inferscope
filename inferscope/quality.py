@@ -64,7 +64,10 @@ def workload_nll(llm: Any, tok: Any, trace: list[dict[str, Any]], max_len: int) 
     return nll / n
 
 
-def generate_json(llm: Any, tok: Any, trace: list[dict[str, Any]], guided: bool) -> list[str]:
+def generate_json(llm: Any, tok: Any, trace: list[dict[str, Any]], guided: bool, compact: bool = False) -> list[str]:
+    """compact: forbid free whitespace between JSON tokens. The JSON grammar
+    allows unlimited whitespace, and a small model can loop on it until
+    max_tokens, which leaves an unterminated object."""
     from vllm import SamplingParams
 
     params = []
@@ -76,7 +79,7 @@ def generate_json(llm: Any, tok: Any, trace: list[dict[str, Any]], guided: bool)
                 kw["guided_decoding"] = GuidedDecodingParams(json=req["schema"])
             except ImportError:  # newer vLLM
                 from vllm.sampling_params import StructuredOutputsParams
-                kw["structured_outputs"] = StructuredOutputsParams(json=req["schema"])
+                kw["structured_outputs"] = StructuredOutputsParams(json=req["schema"], disable_any_whitespace=compact)
         params.append(SamplingParams(**kw))
     prompts = [_chat(tok, r) for r in trace]
     return [o.outputs[0].text for o in llm.generate(prompts, params, use_tqdm=False)]
