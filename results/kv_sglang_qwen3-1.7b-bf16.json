@@ -1,0 +1,137 @@
+{
+  "variant": "qwen3-1.7b-bf16",
+  "engine": "sglang",
+  "configs": {
+    "prefix_off": {
+      "server": {
+        "startup_s": 114.8,
+        "weights_gib": 3.28,
+        "kv_cache_tokens": 7716,
+        "kv_cache_gib": 0.82
+      },
+      "levels": {
+        "8": {
+          "requests": 74,
+          "errors": 0,
+          "wall_s": 186.15,
+          "req_s": 0.398,
+          "output_tok_s": 127.5,
+          "total_tok_s": 355.9,
+          "ttft_p50_ms": 208.6,
+          "ttft_p95_ms": 3582.4,
+          "tpot_p50_ms": 40.9,
+          "tpot_p95_ms": 49.94,
+          "e2e_p50_s": 10.24,
+          "e2e_p95_s": 43.48,
+          "mean_prompt_tokens": 574.6,
+          "mean_output_tokens": 320.7,
+          "cached_prompt_share": 0.0,
+          "gpu_peak_mib": 5261,
+          "gpu_util_mean": 91.9,
+          "sm_clock_mean_mhz": 1752,
+          "sm_clock_min_mhz": 1627,
+          "mem_clock_mean_mhz": 5485,
+          "power_mean_w": 41.8,
+          "temp_max_c": 70,
+          "throttle_reasons": "0x4"
+        },
+        "16": {
+          "requests": 74,
+          "errors": 0,
+          "wall_s": 181.31,
+          "req_s": 0.408,
+          "output_tok_s": 130.9,
+          "total_tok_s": 365.4,
+          "ttft_p50_ms": 5410.7,
+          "ttft_p95_ms": 19965.3,
+          "tpot_p50_ms": 44.91,
+          "tpot_p95_ms": 54.76,
+          "e2e_p50_s": 16.93,
+          "e2e_p95_s": 55.29,
+          "mean_prompt_tokens": 574.6,
+          "mean_output_tokens": 320.7,
+          "cached_prompt_share": 0.0,
+          "gpu_peak_mib": 5345,
+          "gpu_util_mean": 91.5,
+          "sm_clock_mean_mhz": 1747,
+          "sm_clock_min_mhz": 1552,
+          "mem_clock_mean_mhz": 5485,
+          "power_mean_w": 42.6,
+          "temp_max_c": 78,
+          "throttle_reasons": "0x4"
+        }
+      }
+    },
+    "prefix_on": {
+      "server": {
+        "startup_s": 118.6,
+        "weights_gib": 3.28,
+        "kv_cache_tokens": 7716,
+        "kv_cache_gib": 0.82
+      },
+      "levels": {
+        "8": {
+          "requests": 74,
+          "errors": 0,
+          "wall_s": 184.53,
+          "req_s": 0.401,
+          "output_tok_s": 128.6,
+          "total_tok_s": 359.0,
+          "ttft_p50_ms": 171.0,
+          "ttft_p95_ms": 3714.0,
+          "tpot_p50_ms": 38.73,
+          "tpot_p95_ms": 42.08,
+          "e2e_p50_s": 9.74,
+          "e2e_p95_s": 43.86,
+          "mean_prompt_tokens": 574.6,
+          "mean_output_tokens": 320.7,
+          "cached_prompt_share": 0.336,
+          "gpu_peak_mib": 5267,
+          "gpu_util_mean": 91.9,
+          "sm_clock_mean_mhz": 1754,
+          "sm_clock_min_mhz": 1635,
+          "mem_clock_mean_mhz": 5485,
+          "power_mean_w": 41.8,
+          "temp_max_c": 71,
+          "throttle_reasons": "0x4"
+        },
+        "16": {
+          "requests": 74,
+          "errors": 0,
+          "wall_s": 175.16,
+          "req_s": 0.422,
+          "output_tok_s": 135.5,
+          "total_tok_s": 378.2,
+          "ttft_p50_ms": 2851.6,
+          "ttft_p95_ms": 16113.0,
+          "tpot_p50_ms": 47.58,
+          "tpot_p95_ms": 53.95,
+          "e2e_p50_s": 14.14,
+          "e2e_p95_s": 52.3,
+          "mean_prompt_tokens": 574.6,
+          "mean_output_tokens": 320.7,
+          "cached_prompt_share": 0.316,
+          "gpu_peak_mib": 5351,
+          "gpu_util_mean": 90.0,
+          "sm_clock_mean_mhz": 1752,
+          "sm_clock_min_mhz": 1590,
+          "mem_clock_mean_mhz": 5484,
+          "power_mean_w": 41.6,
+          "temp_max_c": 71,
+          "throttle_reasons": "0x24"
+        }
+      }
+    }
+  },
+  "hw_at_run": {
+    "name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+    "vram_gb": 5.99951171875,
+    "spec_bw_gbs": 168.0,
+    "spec_fp16_tflops": 21.5,
+    "meas_bw_gbs": 122.1,
+    "meas_read_bw_gbs": 128.1,
+    "meas_fp16_tflops": 15.73,
+    "sm_clock_mhz": 2100,
+    "power_limit_w": null
+  }
+}
