@@ -1,0 +1,105 @@
+# vLLM serving Qwen3-1.7B for the PulseLoop workload.
+# Every non-default setting comes from a measurement in results/ (see deploy/README.md).
+# Written from single-GPU benchmarks; not yet run on a cluster.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vllm-cache
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm-qwen3
+  labels: {app: vllm-qwen3}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: vllm-qwen3}
+  template:
+    metadata:
+      labels: {app: vllm-qwen3}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.31.0
+          args:
+            - --model=Qwen/Qwen3-1.7B
+            - --max-model-len=4096          # longest request in the trace: 1,971 prompt + 1,751 output tokens
+            - --enable-prefix-caching       # 37% prompt-cache hits; p95 TTFT -70% at concurrency 16
+            - --kv-cache-dtype=fp8          # 2.0x KV tokens in the same memory; +74% throughput at concurrency 16
+            - --attention-backend=FLASHINFER  # only FP8-KV backend on Ampere (FlashAttention: none; Triton: needs sm_89+)
+            # Pin the KV budget: on a cold torch.compile cache the profiler counted
+            # compile memory as activations and cut the KV cache by 37%.
+            # (vLLM's log suggests "--kv-cache-memory", which does not exist.)
+            - --kv-cache-memory-bytes=1220194386
+            - --max-num-seqs=16
+          env:
+            - name: VLLM_CACHE_ROOT        # persist torch.compile + FlashInfer JIT caches across restarts
+              value: /cache/vllm
+            - name: FLASHINFER_WORKSPACE_BASE
+              value: /cache
+            - name: HF_HOME
+              value: /cache/hf
+          ports:
+            - containerPort: 8000
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+          startupProbe:                    # cold start measured at 2-6 min (compile + FlashInfer JIT)
+            httpGet: {path: /health, port: 8000}
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /health, port: 8000}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /health, port: 8000}
+            periodSeconds: 15
+            failureThreshold: 4
+          volumeMounts:
+            - {name: cache, mountPath: /cache}
+            - {name: shm, mountPath: /dev/shm}
+      volumes:
+        - name: cache
+          persistentVolumeClaim: {claimName: vllm-cache}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 2Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-qwen3
+spec:
+  selector: {app: vllm-qwen3}
+  ports:
+    - port: 80
+      targetPort: 8000
+---
+# Scale on queue depth, not GPU utilisation: the GPU sits at ~90% utilisation
+# from concurrency 2 upward, so utilisation cannot tell a healthy replica from
+# an overloaded one. Waiting requests can.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: vllm-qwen3
+spec:
+  scaleTargetRef:
+    name: vllm-qwen3
+  minReplicaCount: 1
+  maxReplicaCount: 4
+  cooldownPeriod: 300
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus.monitoring:9090
+        query: sum(vllm:num_requests_waiting{app="vllm-qwen3"})
+        threshold: "2"
