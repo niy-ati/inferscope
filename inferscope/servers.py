@@ -112,7 +112,7 @@ class Server:
 
 
 def vllm(model: str, port: int, log: Path, *, max_len: int = 8192, util: float = 0.82, prefix_cache: bool = True,
-         quantization: str | None = None, kv_dtype: str = "auto", max_seqs: int = 32, eager: bool = False, extra: list[str] | None = None) -> Server:
+         quantization: str | None = None, kv_dtype: str = "auto", max_seqs: int = 32, eager: bool = False, tp: int = 1, extra: list[str] | None = None) -> Server:
     cmd = ["vllm", "serve", model, "--port", str(port), "--max-model-len", str(max_len), "--gpu-memory-utilization", str(util),
            "--max-num-seqs", str(max_seqs), "--kv-cache-dtype", kv_dtype, "--enable-prompt-tokens-details",
            "--enable-prefix-caching" if prefix_cache else "--no-enable-prefix-caching"]
@@ -120,6 +120,8 @@ def vllm(model: str, port: int, log: Path, *, max_len: int = 8192, util: float =
         cmd += ["--quantization", quantization]
     if eager:
         cmd += ["--enforce-eager"]
+    if tp > 1:  # tensor parallel across GPUs (multi-GPU hosts; not run on the 1-GPU laptop)
+        cmd += ["--tensor-parallel-size", str(tp)]
     return Server("vllm", cmd + (extra or []), port, log, cuda_home=_toolkit("INFERSCOPE_CUDA_VLLM", "~/inferscope/cuda130/nvidia/cu13"))
 
 
@@ -132,7 +134,7 @@ SGLANG_PY = os.path.expanduser(os.getenv("INFERSCOPE_SGLANG_PY", "~/inferscope/.
 
 
 def sglang(model: str, port: int, log: Path, *, max_len: int = 8192, mem: float = 0.82, prefix_cache: bool = True,
-           quantization: str | None = None, kv_dtype: str = "auto", max_seqs: int = 32, extra: list[str] | None = None) -> Server:
+           quantization: str | None = None, kv_dtype: str = "auto", max_seqs: int = 32, tp: int = 1, extra: list[str] | None = None) -> Server:
     """SGLang in its own venv (its pinned torch differs from vLLM's). Prefix
     reuse is RadixAttention; --enable-cache-report puts cached_tokens in usage."""
     cmd = [SGLANG_PY, "-m", "sglang.launch_server", "--model-path", model, "--port", str(port), "--context-length", str(max_len),
@@ -140,6 +142,8 @@ def sglang(model: str, port: int, log: Path, *, max_len: int = 8192, mem: float 
            "--enable-cache-report", "--enable-metrics"]
     if not prefix_cache:
         cmd += ["--disable-radix-cache"]
+    if tp > 1:
+        cmd += ["--tp-size", str(tp)]
     if quantization:
         cmd += ["--quantization", quantization]
     return Server("sglang", cmd + (extra or []), port, log, cuda_home=_toolkit("INFERSCOPE_CUDA_SGLANG", "~/mamba/envs/cuda128"))
@@ -175,6 +179,8 @@ def parse_log(engine: str, text: str) -> dict:
 
 
 def gpu_used_mib() -> int:
+    if not shutil.which("nvidia-smi"):  # e.g. AMD/ROCm: no NVIDIA telemetry
+        return 0
     out = subprocess.run(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout
     return int(out.strip().splitlines()[0])
 
@@ -196,6 +202,8 @@ class GpuSampler:
         self.every, self.peak_mib, self.rows, self._stop = every, 0, [], threading.Event()
 
     def _run(self) -> None:
+        if not shutil.which("nvidia-smi"):  # e.g. AMD/ROCm: latencies still measured, no GPU telemetry
+            return
         while not self._stop.is_set():
             out = subprocess.run(["nvidia-smi", f"--query-gpu={self.FIELDS}", "--format=csv,noheader,nounits"], capture_output=True, text=True).stdout
             f = [x.strip() for x in out.strip().splitlines()[0].split(",")]

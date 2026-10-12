@@ -29,6 +29,7 @@ VARIANTS: dict[str, dict[str, Any]] = {
     "qwen3-1.7b-w4a16-generic": {"model": "Qwen3-1.7B-W4A16-generic"},
     "qwen3-1.7b-w4a16-workload": {"model": "Qwen3-1.7B-W4A16-workload"},
     "qwen3-4b-awq": {"model": "Qwen3-4B-AWQ"},
+    "qwen3-8b-bf16": {"model": "Qwen3-8B"},  # multi-GPU / AMD cloud runs (scripts/cloud_multi_gpu.sh)
 }
 PORT = 8011
 
@@ -148,11 +149,11 @@ def _replay(srv: servers.Server, reqs: list[dict[str, Any]], c: int, **kw: Any) 
     return {**loadgen.summarize(res, wall), "gpu_peak_mib": gpu.peak_mib, **gpu.summary()}, res
 
 
-def perf(variant: str, levels: list[int], n: int, engine: str = "vllm") -> None:
+def perf(variant: str, levels: list[int], n: int, engine: str = "vllm", tag: str = "", tp: int = 1) -> None:
     trace = load_trace()
     reqs = _sample(trace, n)
     out: dict[str, Any] = {"variant": variant, "engine": engine, "levels": {}, "hw_at_run": probe_hw()}
-    with _server(variant, engine) as srv:
+    with _server(variant, engine, **({"tp": tp} if tp > 1 else {})) as srv:
         out["server"] = {"startup_s": round(srv.started_s, 1), **srv.info}
         # warm-up at both ends of the batch range (CUDA graphs, compile, allocator)
         _replay(srv, reqs[:4], 1)
@@ -161,7 +162,7 @@ def perf(variant: str, levels: list[int], n: int, engine: str = "vllm") -> None:
             summary, res = _replay(srv, reqs * max(1, (2 * c + len(reqs) - 1) // len(reqs)), c)
             out["levels"][c] = summary
             print(variant, f"c={c}", json.dumps(summary))
-    _save(f"perf_{variant}.json" if engine == "vllm" else f"perf_{engine}_{variant}.json", out)
+    _save((f"perf_{variant}" if engine == "vllm" else f"perf_{engine}_{variant}") + tag + ".json", out)
 
 
 def prefix(variant: str, c: int, n: int) -> None:
@@ -178,6 +179,8 @@ def prefix(variant: str, c: int, n: int) -> None:
     _save(f"prefix_{variant}.json", out)
 
 
+PIN_KV = 751619276        # 0.70 GiB: fits beside weights + FlashInfer's larger activations on 6 GB
+PIN_KV_BEST = 1341126656  # 1.25 GiB: vLLM's own "fully utilize" figure with a warm compile cache
 KV_CONFIGS: dict[str, dict[str, Any]] = {
     "prefix_off": {"prefix_cache": False},
     "prefix_on": {"prefix_cache": True},
@@ -191,7 +194,38 @@ KV_CONFIGS: dict[str, dict[str, Any]] = {
     "flashinfer_fp8_kv": {"prefix_cache": True, "kv_dtype": "fp8", "extra": ["--attention-backend", "FLASHINFER"]},
     # SGLang tuning pass: its static memory fraction excludes activations, so it can go higher
     "prefix_on_mem86": {"prefix_cache": True, "util": 0.86},
+    # Repeat study: KV budget pinned, so capacity no longer depends on the
+    # torch.compile cache state (see the KV-cache findings).
+    "pin_prefix_off": {"prefix_cache": False, "extra": ["--kv-cache-memory-bytes", str(PIN_KV)]},
+    "pin_prefix_on": {"prefix_cache": True, "extra": ["--kv-cache-memory-bytes", str(PIN_KV)]},
+    "pin_fi_bf16_kv": {"prefix_cache": True, "extra": ["--kv-cache-memory-bytes", str(PIN_KV), "--attention-backend", "FLASHINFER"]},
+    "pin_fi_fp8_kv": {"prefix_cache": True, "kv_dtype": "fp8", "extra": ["--kv-cache-memory-bytes", str(PIN_KV), "--attention-backend", "FLASHINFER"]},
+    "pin_best": {"prefix_cache": True, "extra": ["--kv-cache-memory-bytes", str(PIN_KV_BEST)]},
 }
+
+
+def kv_repeat(variant: str, levels: list[int], configs: list[str], engine: str, repeats: int) -> None:
+    """Every config N times, each with a fresh server, interleaved
+    (config A, B, ..., then A, B, ... again) so slow drift in the laptop's
+    power or temperature spreads across configs instead of biasing one."""
+    reqs = load_trace()
+    path = RESULTS / f"kv_repeats_{engine}_{variant}.json"
+    out: dict[str, Any] = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"variant": variant, "engine": engine, "runs": {}}
+    for r in range(repeats):
+        for name in configs:
+            with _server(variant, engine, tag=f"-rep-{name}", **KV_CONFIGS[name]) as srv:
+                warm = [{**q, "system": "warm-up " + q["system"]} for q in reqs[:8]]
+                _replay(srv, warm[:4], 1)
+                _replay(srv, warm, 8)
+                run: dict[str, Any] = {"server": {"startup_s": round(srv.started_s, 1), **srv.info}, "levels": {}}
+                for c in levels:
+                    if KV_CONFIGS[name]["prefix_cache"]:
+                        srv.reset_prefix_cache()
+                    summary, _ = _replay(srv, reqs, c)
+                    run["levels"][c] = summary
+                    print(variant, name, f"rep={r}", f"c={c}", json.dumps(summary), flush=True)
+            out["runs"].setdefault(name, []).append(run)
+            _save(path.name, out)
 
 
 def kv(variant: str, levels: list[int], configs: list[str], engine: str = "vllm") -> None:
@@ -274,12 +308,15 @@ def hw() -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["prep", "hw", "perf", "prefix", "kv", "guided", "quality"])
+    ap.add_argument("cmd", choices=["prep", "hw", "perf", "prefix", "kv", "kv-repeat", "guided", "quality"])
     ap.add_argument("--variant", default="qwen3-1.7b-bf16")
     ap.add_argument("--concurrency", default="1,2,4,8,16")
     ap.add_argument("-c", type=int, default=4)
     ap.add_argument("--configs", default="prefix_off,prefix_on")
     ap.add_argument("--engine", choices=["vllm", "sglang"], default="vllm")
+    ap.add_argument("--repeats", type=int, default=3)
+    ap.add_argument("--tag", default="", help="suffix for the perf results file")
+    ap.add_argument("--tp", type=int, default=1, help="tensor-parallel GPUs (perf only)")
     ap.add_argument("-n", type=int, default=32)
     ap.add_argument("--wikitext", default=str(DATA / "wikitext2_test.txt"))
     ap.add_argument("--baseline", default="qwen3-1.7b-bf16")
@@ -289,7 +326,9 @@ def main() -> None:
     elif a.cmd == "hw":
         hw()
     elif a.cmd == "perf":
-        perf(a.variant, [int(x) for x in a.concurrency.split(",")], a.n, a.engine)
+        perf(a.variant, [int(x) for x in a.concurrency.split(",")], a.n, a.engine, a.tag, a.tp)
+    elif a.cmd == "kv-repeat":
+        kv_repeat(a.variant, [int(x) for x in a.concurrency.split(",")], a.configs.split(","), a.engine, a.repeats)
     elif a.cmd == "prefix":
         prefix(a.variant, a.c, a.n)
     elif a.cmd == "kv":
