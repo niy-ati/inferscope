@@ -1,0 +1,11 @@
+{
+  "name": "Tesla T4",
+  "vram_gb": 14.56219482421875,
+  "spec_bw_gbs": null,
+  "spec_fp16_tflops": null,
+  "meas_bw_gbs": 231.4,
+  "meas_read_bw_gbs": 275.8,
+  "meas_fp16_tflops": 24.25,
+  "sm_clock_mhz": null,
+  "power_limit_w": null
+}

@@ -41,6 +41,9 @@ shutil.copytree(bundle, work, dirs_exist_ok=True)
 os.chdir(work)
 
 sh("pip install -q vllm httpx jsonschema huggingface_hub")
+# Kaggle preinstalls torchaudio/torchcodec built for an older CUDA than the torch
+# vLLM brings, and torch refuses to load mismatched extensions. Text-only: drop them.
+sh("pip uninstall -y -q torchaudio torchcodec")
 ok = subprocess.run([sys.executable, "-c", "import torch; assert torch.cuda.is_available(); print(torch.__version__, torch.version.cuda)"]).returncode == 0
 if not ok:  # the newest vLLM wheel may need a newer driver than Kaggle's
     sh("pip install -q 'vllm==0.11.0'")
