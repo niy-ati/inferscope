@@ -194,6 +194,24 @@ Each configuration 3 times at concurrency 16, each with a fresh server, interlea
 
 Throughput varies by about 1% run to run, so every effect reported here is far outside the noise. Single runs were accurate too: the first FP8 measurement (+74%) and the repeated one (+83%) differ mainly because the bf16 arm's KV budget was 7,248 tokens then and 6,544 here.
 
+### AMD MI300X: prediction, not yet measured
+
+> **Status: prediction made on 2026-10-13, before any MI300X run.** Nothing in this section is a measurement. [`scripts/cloud_multi_gpu.sh`](scripts/cloud_multi_gpu.sh) will measure the same quantities on MI300X (ROCm) once AMD Developer Cloud credits are available, and this section will then report predicted vs measured.
+
+[`tools/predict_mi300x.py`](tools/predict_mi300x.py) applies the roofline model with MI300X's datasheet figures (5.3 TB/s HBM3, 192 GB) and two efficiency bands measured on hardware that was run: sustained bandwidth at 69–86% of datasheet, and single-request decode at 65–97% of the bandwidth floor. Under tensor parallelism it adds two all-reduces per layer at an *assumed* 5–20 µs each. It predicts only single-request decode time and KV capacity; throughput under load depends on prefill interleaving and queueing, which a roofline does not model. Output: [`predictions/mi300x_qwen3-8b.json`](results/predictions/mi300x_qwen3-8b.json).
+
+Back-test on the T4 runs: all three measured decode times fall inside the predicted bands (Qwen3-4B TP=1: 30–56 ms predicted, 45.4 measured; TP=2: 15–29, 22.6; Qwen3-8B TP=2: 29–54, 37.6). This is a consistency check, not independent validation, since the T4 runs also set the bands.
+
+| Qwen3-8B bf16 on MI300X | TP=1 | TP=2 | TP=4 | TP=8 |
+|---|---|---|---|---|
+| Predicted TPOT, single request | 3.4–6.4 ms | 2.1–4.6 ms | 1.2–3.0 ms | 0.8–2.2 ms |
+| Predicted KV capacity | ~1.0M tokens | ~2.2M | ~4.5M | ~9.0M |
+| Worst-case trace requests that fit | 277 | 585 | 1,200 | 2,430 |
+
+What the prediction commits to, so the measurement can prove it wrong:
+- **Tensor parallelism beyond 2 pays off less for an 8B model.** At TP=8, the assumed all-reduce time is a large share of each token's decode time.
+- **KV capacity stops being the constraint.** One MI300X holds hundreds of this trace's worst-case requests, where the 6 GB laptop held two or three. The bottleneck should move from memory capacity to bandwidth and scheduling.
+
 ### Fused MoE kernel (Triton)
 
 One mixture-of-experts layer with real model shapes. The fused grouped-GEMM kernel is compared against a per-expert PyTorch loop and against the bandwidth bound.
@@ -211,7 +229,7 @@ Outputs match the reference within 0.1% relative error. Full table: [`results/mo
 
 ### Not done
 
-- AMD GPUs: [`scripts/cloud_multi_gpu.sh`](scripts/cloud_multi_gpu.sh) runs the same comparison on MI300X with ROCm; awaiting AMD Developer Cloud credits
+- AMD GPUs, measured: [`scripts/cloud_multi_gpu.sh`](scripts/cloud_multi_gpu.sh) runs the comparison on MI300X with ROCm and checks the prediction above; awaiting AMD Developer Cloud credits
 - Multi-node serving (pipeline parallelism across machines)
 
 ## Deployment
@@ -232,6 +250,7 @@ Outputs match the reference within 0.1% relative error. Full table: [`results/mo
 | `inferscope/bench.py` | CLI that runs every experiment and writes `results/*.json` |
 | `inferscope/report.py` | Builds `REPORT.md` and plots from the results |
 | `tools/extract_pulseloop_trace.py` | Rebuilds the workload trace from PulseLoop's stored runs |
+| `tools/predict_mi300x.py` | Roofline prediction for MI300X, back-tested on the T4 runs (prediction only) |
 | `tools/reference_nll_check.py` | Loss, entropy and top-1 agreement on reference answers, with Hugging Face transformers |
 | `scripts/` | The exact benchmark queues that produced the results, the Kaggle 2× T4 run, and the multi-GPU / AMD cloud script |
 | `deploy/` | Kubernetes manifests derived from the results |

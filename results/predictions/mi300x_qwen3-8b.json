@@ -1,0 +1,111 @@
+{
+  "status": "PREDICTION - not measured",
+  "made_on": "2026-10-13",
+  "assumptions": {
+    "bw_frac": [
+      0.69,
+      0.86
+    ],
+    "decode_efficiency": [
+      0.65,
+      0.97
+    ],
+    "allreduce_us": [
+      5.0,
+      20.0
+    ],
+    "datasheet": {
+      "Tesla T4": {
+        "bw_gbs": 320.0,
+        "vram_gb": 15.0
+      },
+      "AMD MI300X": {
+        "bw_gbs": 5300.0,
+        "vram_gb": 192.0
+      }
+    },
+    "kv_util": 0.9,
+    "kv_overhead_gb_per_gpu": 4.0
+  },
+  "backtest_on_measured_t4": [
+    {
+      "gpu": "Tesla T4",
+      "model": "Qwen3-4B",
+      "tp": 1,
+      "predicted_tpot_ms": [
+        30.14,
+        56.05
+      ],
+      "measured_tpot_ms": 45.37,
+      "inside_band": true
+    },
+    {
+      "gpu": "Tesla T4",
+      "model": "Qwen3-4B",
+      "tp": 2,
+      "predicted_tpot_ms": [
+        15.43,
+        29.47
+      ],
+      "measured_tpot_ms": 22.6,
+      "inside_band": true
+    },
+    {
+      "gpu": "Tesla T4",
+      "model": "Qwen3-8B",
+      "tp": 2,
+      "predicted_tpot_ms": [
+        28.71,
+        54.17
+      ],
+      "measured_tpot_ms": 37.59,
+      "inside_band": true
+    }
+  ],
+  "mi300x": [
+    {
+      "gpu": "AMD MI300X",
+      "model": "Qwen3-8B bf16",
+      "tp": 1,
+      "predicted_tpot_ms": [
+        3.42,
+        6.37
+      ],
+      "predicted_kv_tokens": 1033658,
+      "worst_case_requests_in_kv": 277
+    },
+    {
+      "gpu": "AMD MI300X",
+      "model": "Qwen3-8B bf16",
+      "tp": 2,
+      "predicted_tpot_ms": [
+        2.07,
+        4.62
+      ],
+      "predicted_kv_tokens": 2178406,
+      "worst_case_requests_in_kv": 585
+    },
+    {
+      "gpu": "AMD MI300X",
+      "model": "Qwen3-8B bf16",
+      "tp": 4,
+      "predicted_tpot_ms": [
+        1.22,
+        3.03
+      ],
+      "predicted_kv_tokens": 4467903,
+      "worst_case_requests_in_kv": 1200
+    },
+    {
+      "gpu": "AMD MI300X",
+      "model": "Qwen3-8B bf16",
+      "tp": 8,
+      "predicted_tpot_ms": [
+        0.79,
+        2.24
+      ],
+      "predicted_kv_tokens": 9046896,
+      "worst_case_requests_in_kv": 2430
+    }
+  ]
+}
