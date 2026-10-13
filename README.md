@@ -6,13 +6,17 @@ The workload is [PulseLoop](https://github.com/niy-ati/PulseLoop)'s production L
 
 ## Findings
 
-1. **FP8 KV cache: +74% throughput, −95% p95 TTFT at 16 concurrent requests.** In the same KV memory, FP8 holds exactly twice as many tokens (14,512 vs 7,248). On Ampere it is only reachable through FlashInfer, which needed a CUDA toolchain matched to torch's headers.
-2. **Prefix caching: −70% p95 TTFT at 16 concurrent requests** (2.6 s → 0.8 s), with 37% of prompt tokens served from cache, close to the 39% upper bound computed from the trace.
-3. **vLLM's KV budget depends on its compile cache.** On a cold `torch.compile` cache, vLLM's memory profiler counted compiler memory as activations (0.70 vs 0.21 GiB) and cut the KV cache by 37%, making p95 TTFT **17× worse** with identical flags. The fix is to pin `--kv-cache-memory-bytes`. (The flag vLLM's own log recommends, `--kv-cache-memory`, does not exist.)
-4. **vLLM 0.31 beat SGLang 0.5.9 on this workload.** At matched KV capacity it led by 10% throughput and 4× median TTFT. At each engine's best memory setting it fit 31% more KV tokens in less memory, for **+32% throughput and 15× lower p95 TTFT** at 16 concurrent requests.
-5. **A 4-bit 4B model beats a bf16 1.7B model on speed and on understanding the workload:** faster decode at every concurrency up to 8, lower WikiText-2 perplexity (16.54 vs 17.77) and ~39% lower perplexity on PulseLoop's real answers. The bf16 model was more reliable at guided JSON (97% vs 89% valid).
-6. **A laptop GPU on battery runs at half power.** Unplugged, the card fell from ~43 W / 1,750 MHz to ~23 W / 820 MHz (throttle reasons `0x24`). The clock sampler caught it; throttled runs are excluded from the results below.
-7. **Self-hosting needs guided decoding plus a loop guard.** Without a grammar, 0% of outputs were valid JSON. With one, the remaining failures were greedy-decoding loops running to the context limit.
+Speed results at concurrency 16 are means of 3 runs, each with a fresh server, on AC power at ~1,750 MHz (± is the standard deviation).
+
+1. **FP8 KV cache: +83% throughput (240.5 ± 2.4 vs 131.7 ± 1.3 tok/s) and −96% p95 TTFT** in the same KV memory. FP8 holds exactly twice the tokens. On Ampere it is only reachable through FlashInfer, which needed a CUDA toolchain matched to torch's headers.
+2. **Prefix caching: up to −70% p95 TTFT,** with 37% of prompt tokens served from cache, close to the 39% upper bound computed from the trace. How much it helps depends on KV room: with a tight KV budget, requests queue for memory and the gain shrinks to −11%.
+3. **vLLM's KV budget depends on its compile cache.** On a cold `torch.compile` cache, vLLM's memory profiler counted compiler memory as activations (0.70 vs 0.21 GiB) and cut the KV cache by 37%, making p95 TTFT **17× worse** with identical flags. Pinning `--kv-cache-memory-bytes` removes it. (The flag vLLM's own log recommends, `--kv-cache-memory`, does not exist.)
+4. **vLLM 0.31 beat SGLang 0.5.9 on this workload: +25% throughput (205.0 ± 1.7 vs 164.3 ± 2.5 tok/s) and 13× lower p95 TTFT,** each engine at its best memory setting. vLLM fits more KV in less memory; at matched KV capacity the two were within 10% on throughput.
+5. **Tensor parallelism on 2× T4 scales decode almost linearly over PCIe** (45.4 → 22.6 ms/token for Qwen3-4B), gives 4.5× the KV capacity, and serves Qwen3-8B, which doesn't fit one T4, faster than one T4 serves Qwen3-4B.
+6. **Calibrate quantization on the customer's traffic.** Two GPTQ W4A16 models differing only in calibration text: workload calibration kept guided-JSON validity at 84% vs 60% for generic text, at a small cost in WikiText perplexity. Both decode 2× faster than bf16.
+7. **Loss on another model's answers is not a quality metric for quantization.** The generically calibrated GPTQ model scored a *lower* loss on PulseLoop's reference answers than its own bf16 parent while agreeing with them *less* often (top-1 62.1% vs 62.9%): its predictions are 53% higher in entropy, and spread-out probability is rewarded by that metric.
+8. **Self-hosting needs guided decoding plus a loop guard.** Without a grammar, 0% of outputs were valid JSON. With one, the remaining failures were greedy-decoding loops running to the context limit.
+9. **A laptop GPU on battery runs at half power** (~43 W / 1,750 MHz → ~23 W / 820 MHz). Every run records its clocks; runs below 1,600 MHz are flagged and excluded. That also explained an apparent anomaly: single-request decode measured 55% above its bandwidth floor on battery, and within 3% of it on AC.
 
 ## Hardware
 
@@ -113,7 +117,7 @@ Same model (Qwen3-1.7B bf16), same trace in the same order, same fixed output le
 - **A 4-bit 4B model decodes faster than a bf16 1.7B one,** because it reads fewer bytes per token. At 16 concurrent requests both hit the same ceiling.
 - **Prefill is where AWQ pays.** Its time to first token is higher from concurrency 4 up, since 4-bit weights are dequantized in compute-bound prefill.
 
-† **Unresolved:** bf16 at concurrency 1 decoded at 45.8 ms/token, 55% above its floor and slower than two requests at once. These sweeps ran before clock sampling was added. The later finding that battery power halves the GPU's clocks makes power state the leading suspect, but that is not confirmed.
+† **Resolved: power state, not the engine.** This sweep measured bf16 single-request decode at 45.8 ms/token, 55% above the floor. It ran before clock sampling existed. Rerun on AC power with clocks recorded (1,752 MHz), the same request mix decodes at **30.5 ms/token, within 3% of the 29.5 ms floor** ([`perf_qwen3-1.7b-bf16-clock.json`](results/perf_qwen3-1.7b-bf16-clock.json)).
 
 ### Quality
 
@@ -122,15 +126,73 @@ Results: [`quality_qwen3-1.7b-bf16.json`](results/quality_qwen3-1.7b-bf16.json),
 | | Qwen3-1.7B bf16 | Qwen3-4B AWQ (4-bit) |
 |---|---|---|
 | WikiText-2 perplexity | 17.77 | **16.54** |
-| NLL of PulseLoop's real answers (per token) | 3.381 | **2.886** |
+| NLL of PulseLoop's reference answers (per token, see caveat) | 3.381 | 2.886 |
 | Valid JSON, unguided | 0% | 0% |
 | Valid JSON, schema-guided | **97.3%** | 89.2% |
 | Valid JSON, guided with no free whitespace | 89.2% | 91.9% |
 
-- **The 4-bit 4B model understands this workload better:** its likelihood of the answers PulseLoop's production model actually wrote corresponds to about 39% lower in-domain perplexity.
+- **The 4-bit 4B model has the lower WikiText-2 perplexity** (16.54 vs 17.77). Its lower loss on PulseLoop's reference answers is *not* evidence of better quality: see "Loss on another model's answers" below, which shows that metric rewards less confident models.
 - **Guided decoding is not optional on a self-hosted engine.** PulseLoop's prompts never ask for JSON; production relies on the API's strict schema mode. Without a grammar, neither model produced a single valid object.
 - **The remaining failures are degenerate loops, not formatting.** Under greedy decoding a model sometimes repeats whitespace or text inside a JSON string until the context runs out (one output reached 79,638 characters). Banning whitespace *between* tokens does not stop loops *inside* strings, which is why it helped one model and hurt the other. The fix belongs in serving: a `max_tokens` close to the expected length and a retry at non-zero temperature.
 - **Methodology note:** an earlier run capped output at 2× the reference length and reported 81% valid for both models. Most of those failures were that cap, which production does not have.
+
+### GPTQ calibration: generic text vs the customer's own traffic
+
+Qwen3-1.7B quantized twice with GPTQ W4A16 (llmcompressor), changing only the calibration text. Both sets carry the same number of tokens (31,352 generic vs 30,917 workload); workload calibration uses the even-id half of the trace, and quality is scored on the odd-id half. Results: [`quality_qwen3-1.7b-w4a16-*.json`](results/), [`perf_qwen3-1.7b-w4a16-*.json`](results/).
+
+| Qwen3-1.7B | bf16 | GPTQ, generic calibration | GPTQ, workload calibration |
+|---|---|---|---|
+| WikiText-2 perplexity | 17.77 | **18.93** | 19.87 |
+| Valid JSON, schema-guided | 97.3% | 59.5% | **83.8%** |
+| Weights | 3.22 GiB | 1.27 GiB | 1.27 GiB |
+| TPOT at concurrency 1 | 30.5 ms | **15.0 ms** | **15.0 ms** |
+| Output throughput at concurrency 16 | 150 tok/s | 282 tok/s | 279 tok/s |
+
+- **Each calibration set preserves what it saw.** Generic calibration keeps generic text closer to bf16; workload calibration keeps PulseLoop's structured-output reliability **24 points higher**. For a customer deployment, calibrate on the customer's traffic.
+- **4-bit halves decode time,** because decode reads 1.27 instead of 3.22 GiB of weights per token, and it leaves room for 2.5× the KV cache (31,440 tokens).
+
+**Loss on another model's answers.** Every quantized model was also scored on the loss of PulseLoop's reference answers, which a different, much larger production model wrote. The generically calibrated model scored *better* than its own bf16 parent, which no 4-bit rounding should achieve. Recomputed independently with Hugging Face transformers ([`tools/reference_nll_check.py`](tools/reference_nll_check.py), [`reference_nll_check.json`](results/reference_nll_check.json)):
+
+| Qwen3-1.7B, 12,717 reference tokens | Loss (NLL/token) | Prediction entropy | Top-1 agreement with reference |
+|---|---|---|---|
+| bf16 | 3.381 | 0.361 | **62.9%** |
+| GPTQ, generic calibration | **2.860** | 0.551 | 62.1% |
+| GPTQ, workload calibration | 3.372 | 0.370 | 62.8% |
+
+The generic model agrees with the reference *less* often, yet its loss is lower, because its predictions carry 53% more entropy: on text a model would not have written itself, spreading probability is rewarded. So this loss is not a quality metric for quantization. Top-1 agreement and task-level checks (schema-valid JSON) are, and both put workload calibration closest to bf16.
+
+### Tensor parallelism on 2× T4 (Kaggle)
+
+A single 6 GB GPU can't show distributed serving, so the same harness, trace and output lengths ran on Kaggle's free 2× Tesla T4 (Turing, 15 GB each, PCIe, no NVLink) with vLLM, fp16 and the Triton attention backend. Script: [`scripts/kaggle_t4_tp.py`](scripts/kaggle_t4_tp.py). Results: [`results/t4/`](results/t4/). Measured per T4: 276 GB/s read bandwidth, 24.7 fp16 TFLOPS.
+
+| | Qwen3-4B, TP=1 | Qwen3-4B, TP=2 | Qwen3-8B, TP=2 |
+|---|---|---|---|
+| Weights per GPU | 7.56 GiB | 3.82 GiB | 7.64 GiB |
+| KV cache | 25,088 tokens | **112,176 tokens** | 56,224 tokens |
+| TPOT at concurrency 1 | 45.4 ms | **22.6 ms** | 37.6 ms |
+| Share of the bandwidth floor | 65% | 66% | 79% |
+| Output throughput, concurrency 32 | 124 tok/s | **226 tok/s** | 163 tok/s |
+| TTFT p95, concurrency 32 | 466 ms | 425 ms | 534 ms |
+
+- **Decode scales almost linearly with TP=2, even over PCIe.** Each GPU reads half the weights, and both runs reach the same ~65% of their bandwidth floor, so the all-reduce between layers costs little at this size.
+- **TP=2 makes a model servable that doesn't fit one GPU, and it beats the smaller model on one GPU.** Qwen3-8B (16 GB in fp16) doesn't fit a 15 GB T4; on two it decodes faster (37.6 ms) than Qwen3-4B does on one (45.4 ms).
+- **Splitting weights frees memory for KV:** 4.5× the KV capacity for the 4B model.
+- **Caveat:** T4s are power-capped at 70 W, and SM clocks varied between runs (747–1,339 MHz on GPU 0). Decode is bandwidth-bound, so this matters less than compute would, but it is not as controlled as the laptop runs. One run per configuration.
+
+### Repeated runs
+
+Each configuration 3 times at concurrency 16, each with a fresh server, interleaved across configurations so slow drift spreads evenly. The KV budget is pinned with `--kv-cache-memory-bytes` so capacity doesn't depend on compile-cache state. Runs below 1,600 MHz are excluded (three were, when the charger was unplugged mid-run). Results: [`kv_repeats_*.json`](results/).
+
+| Concurrency 16, mean ± sd | KV tokens | Output tok/s | TTFT p50 | TTFT p95 |
+|---|---|---|---|---|
+| vLLM, 0.70 GiB KV, prefix off | 6,544 | 119.5 ± 0.3 | 6,422 ± 114 ms | 24.3 ± 0.5 s |
+| vLLM, 0.70 GiB KV, prefix on | 6,544 | 131.3 ± 0.9 | 2,666 ± 8 ms | 21.7 ± 0.05 s |
+| vLLM, 0.70 GiB KV, FlashInfer, bf16 KV | 6,544 | 131.7 ± 1.3 | 2,633 ± 7 ms | 21.7 ± 0.2 s |
+| vLLM, 0.70 GiB KV, FlashInfer, **FP8 KV** | 13,104 | **240.5 ± 2.4** | **244 ± 13 ms** | **0.95 ± 0.18 s** |
+| vLLM, 1.25 GiB KV, prefix on | 11,680 | 205.0 ± 1.7 | 274 ± 10 ms | 0.86 ± 0.05 s |
+| SGLang, `--mem-fraction-static 0.86`, prefix on | 9,595 | 164.3 ± 2.5 | 996 ± 56 ms | 11.2 ± 0.5 s |
+
+Throughput varies by about 1% run to run, so every effect reported here is far outside the noise. Single runs were accurate too: the first FP8 measurement (+74%) and the repeated one (+83%) differ mainly because the bf16 arm's KV budget was 7,248 tokens then and 6,544 here.
 
 ### Fused MoE kernel (Triton)
 
@@ -149,9 +211,8 @@ Outputs match the reference within 0.1% relative error. Full table: [`results/mo
 
 ### Not done
 
-- GPTQ W4A16 with generic vs workload calibration (code in `quantize.py`, not yet run)
-- Repeated runs for confidence intervals
-- Distributed serving and AMD GPUs: one NVIDIA GPU was available
+- AMD GPUs: [`scripts/cloud_multi_gpu.sh`](scripts/cloud_multi_gpu.sh) runs the same comparison on MI300X with ROCm; awaiting AMD Developer Cloud credits
+- Multi-node serving (pipeline parallelism across machines)
 
 ## Deployment
 
@@ -171,7 +232,8 @@ Outputs match the reference within 0.1% relative error. Full table: [`results/mo
 | `inferscope/bench.py` | CLI that runs every experiment and writes `results/*.json` |
 | `inferscope/report.py` | Builds `REPORT.md` and plots from the results |
 | `tools/extract_pulseloop_trace.py` | Rebuilds the workload trace from PulseLoop's stored runs |
-| `scripts/` | The exact benchmark queues that produced the results |
+| `tools/reference_nll_check.py` | Loss, entropy and top-1 agreement on reference answers, with Hugging Face transformers |
+| `scripts/` | The exact benchmark queues that produced the results, the Kaggle 2× T4 run, and the multi-GPU / AMD cloud script |
 | `deploy/` | Kubernetes manifests derived from the results |
 
 ## Running it
