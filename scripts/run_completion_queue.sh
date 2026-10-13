@@ -20,10 +20,11 @@ quantize() {
   wsl -e bash -lc "cd /mnt/c/Users/niyat/content/inferscope && source ~/inferscope/.venv-quant/bin/activate && rm -rf ~/models/Qwen3-1.7B-W4A16-$1 && python -m inferscope.quantize --calib $1 2>&1 | grep -E 'saved|Error' | cut -c1-300" | tr -d '\0'
 }
 
-# 0. GPTQ generic calibration (token-matched to the workload set)
-quantize generic
+# 0. GPTQ generic calibration (token-matched to the workload set).
+#    Done 2026-10-12: 81 samples / 31,352 tokens vs workload 37 / 30,917.
+# quantize generic
 # 1. Concurrency-1 anomaly, now with clock sampling
-step perf --variant qwen3-1.7b-bf16 --concurrency 1,2 -n 16 --tag -clock
+step perf --variant qwen3-1.7b-bf16 --concurrency 1,2 -n 16 --tag=-clock
 # 2. GPTQ: quality, then speed, for both calibration sets
 step quality --variant qwen3-1.7b-w4a16-generic
 step quality --variant qwen3-1.7b-w4a16-workload
