@@ -61,7 +61,7 @@ class Server:
     def url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def start(self, timeout: float = 900) -> "Server":
+    def start(self, timeout: float = float(os.getenv("INFERSCOPE_START_TIMEOUT", "900"))) -> "Server":
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         log = open(self.log_path, "w")
         t0 = time.time()
@@ -122,6 +122,8 @@ def vllm(model: str, port: int, log: Path, *, max_len: int = 8192, util: float =
         cmd += ["--enforce-eager"]
     if tp > 1:  # tensor parallel across GPUs (multi-GPU hosts; not run on the 1-GPU laptop)
         cmd += ["--tensor-parallel-size", str(tp)]
+    # Host-specific flags, e.g. "--dtype float16" on GPUs without bf16 (Turing T4)
+    cmd += os.getenv("INFERSCOPE_VLLM_EXTRA", "").split()
     return Server("vllm", cmd + (extra or []), port, log, cuda_home=_toolkit("INFERSCOPE_CUDA_VLLM", "~/inferscope/cuda130/nvidia/cu13"))
 
 
@@ -191,6 +193,11 @@ def _wait_gpu_free(limit_mib: int = 400, timeout: float = 60) -> None:
         time.sleep(1)
 
 
+# RTX 3050 Laptop: sustained load clock on AC is ~1,750 MHz. Other GPUs set
+# their own threshold (0 disables the check).
+THROTTLED_BELOW_MHZ = int(os.getenv("INFERSCOPE_THROTTLE_MHZ", "1600"))
+
+
 class GpuSampler:
     """Peak GPU memory, utilisation, clocks and power while a benchmark runs.
     Clocks and throttle reasons matter on a laptop: the driver lowers clocks
@@ -240,4 +247,8 @@ class GpuSampler:
                 "mem_clock_mean_mhz": round(sum(r[2] for r in busy) / len(busy)),
                 "power_mean_w": round(sum(r[3] for r in busy) / len(busy), 1),
                 "temp_max_c": max(r[4] for r in self.rows),
-                "throttle_reasons": hex(reasons)}
+                "throttle_reasons": hex(reasons),
+                # On AC this card holds ~1,750 MHz under load; on battery it
+                # falls to ~800-1,400. The reason bits alone don't separate
+                # the two (0x24 shows up on AC too), the clock does.
+                "throttled": sum(r[1] for r in busy) / len(busy) < THROTTLED_BELOW_MHZ}
