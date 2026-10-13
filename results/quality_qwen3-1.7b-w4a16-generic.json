@@ -1,0 +1,20 @@
+{
+  "variant": "qwen3-1.7b-w4a16-generic",
+  "eval_requests": 37,
+  "wikitext_ppl": 18.929,
+  "workload_nll": 2.8679,
+  "json_free": {
+    "parse_rate": 0.0,
+    "schema_valid_rate": 0.0,
+    "identical_to_baseline": 0.0
+  },
+  "json_guided": {
+    "parse_rate": 0.5945945945945946,
+    "schema_valid_rate": 0.5945945945945946,
+    "identical_to_baseline": 0.0
+  },
+  "json_guided_compact": {
+    "parse_rate": 0.6756756756756757,
+    "schema_valid_rate": 0.6756756756756757
+  }
+}
