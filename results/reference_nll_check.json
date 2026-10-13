@@ -1,0 +1,23 @@
+[
+  {
+    "model": "Qwen3-1.7B",
+    "tokens": 12717,
+    "nll": 3.381,
+    "entropy": 0.3605,
+    "top1_agree": 0.6288
+  },
+  {
+    "model": "Qwen3-1.7B-W4A16-generic",
+    "tokens": 12717,
+    "nll": 2.8602,
+    "entropy": 0.5511,
+    "top1_agree": 0.6207
+  },
+  {
+    "model": "Qwen3-1.7B-W4A16-workload",
+    "tokens": 12717,
+    "nll": 3.3717,
+    "entropy": 0.3695,
+    "top1_agree": 0.6275
+  }
+]
