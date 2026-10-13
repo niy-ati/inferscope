@@ -1,0 +1,116 @@
+{
+  "variant": "qwen3-1.7b-bf16",
+  "engine": "sglang",
+  "runs": {
+    "prefix_on_mem86": [
+      {
+        "server": {
+          "startup_s": 152.5,
+          "weights_gib": 3.28,
+          "kv_cache_tokens": 9595,
+          "kv_cache_gib": 1.02
+        },
+        "levels": {
+          "16": {
+            "requests": 74,
+            "errors": 0,
+            "wall_s": 145.72,
+            "req_s": 0.508,
+            "output_tok_s": 162.9,
+            "total_tok_s": 454.7,
+            "ttft_p50_ms": 958.4,
+            "ttft_p95_ms": 11335.0,
+            "tpot_p50_ms": 50.53,
+            "tpot_p95_ms": 56.51,
+            "e2e_p50_s": 13.14,
+            "e2e_p95_s": 52.86,
+            "mean_prompt_tokens": 574.6,
+            "mean_output_tokens": 320.7,
+            "cached_prompt_share": 0.33,
+            "gpu_peak_mib": 5575,
+            "gpu_util_mean": 88.8,
+            "sm_clock_mean_mhz": 1754,
+            "sm_clock_min_mhz": 1642,
+            "mem_clock_mean_mhz": 5485,
+            "power_mean_w": 41.4,
+            "temp_max_c": 72,
+            "throttle_reasons": "0x4",
+            "throttled": false
+          }
+        }
+      },
+      {
+        "server": {
+          "startup_s": 155.7,
+          "weights_gib": 3.28,
+          "kv_cache_tokens": 9595,
+          "kv_cache_gib": 1.02
+        },
+        "levels": {
+          "16": {
+            "requests": 74,
+            "errors": 0,
+            "wall_s": 141.92,
+            "req_s": 0.521,
+            "output_tok_s": 167.2,
+            "total_tok_s": 466.8,
+            "ttft_p50_ms": 968.8,
+            "ttft_p95_ms": 10649.2,
+            "tpot_p50_ms": 48.12,
+            "tpot_p95_ms": 54.09,
+            "e2e_p50_s": 12.32,
+            "e2e_p95_s": 51.48,
+            "mean_prompt_tokens": 574.6,
+            "mean_output_tokens": 320.7,
+            "cached_prompt_share": 0.33,
+            "gpu_peak_mib": 5575,
+            "gpu_util_mean": 90.8,
+            "sm_clock_mean_mhz": 1759,
+            "sm_clock_min_mhz": 1665,
+            "mem_clock_mean_mhz": 5485,
+            "power_mean_w": 41.2,
+            "temp_max_c": 68,
+            "throttle_reasons": "0x4",
+            "throttled": false
+          }
+        }
+      },
+      {
+        "server": {
+          "startup_s": 136.8,
+          "weights_gib": 3.28,
+          "kv_cache_tokens": 9595,
+          "kv_cache_gib": 1.02
+        },
+        "levels": {
+          "16": {
+            "requests": 74,
+            "errors": 0,
+            "wall_s": 145.71,
+            "req_s": 0.508,
+            "output_tok_s": 162.9,
+            "total_tok_s": 454.7,
+            "ttft_p50_ms": 1060.8,
+            "ttft_p95_ms": 11522.5,
+            "tpot_p50_ms": 50.98,
+            "tpot_p95_ms": 56.09,
+            "e2e_p50_s": 13.94,
+            "e2e_p95_s": 54.09,
+            "mean_prompt_tokens": 574.6,
+            "mean_output_tokens": 320.7,
+            "cached_prompt_share": 0.33,
+            "gpu_peak_mib": 5575,
+            "gpu_util_mean": 88.4,
+            "sm_clock_mean_mhz": 1746,
+            "sm_clock_min_mhz": 1642,
+            "mem_clock_mean_mhz": 5485,
+            "power_mean_w": 41.3,
+            "temp_max_c": 72,
+            "throttle_reasons": "0x4",
+            "throttled": false
+          }
+        }
+      }
+    ]
+  }
+}
