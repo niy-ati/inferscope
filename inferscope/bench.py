@@ -30,6 +30,9 @@ VARIANTS: dict[str, dict[str, Any]] = {
     "qwen3-1.7b-w4a16-workload": {"model": "Qwen3-1.7B-W4A16-workload"},
     "qwen3-4b-awq": {"model": "Qwen3-4B-AWQ"},
     "qwen3-8b-bf16": {"model": "Qwen3-8B"},  # multi-GPU / AMD cloud runs (scripts/cloud_multi_gpu.sh)
+    # Kaggle 2x T4 (fp16 via INFERSCOPE_VLLM_EXTRA): 4B fits one T4, 8B needs two
+    "qwen3-4b-fp16": {"model": "Qwen3-4B"},
+    "qwen3-8b-fp16": {"model": "Qwen3-8B"},
 }
 PORT = 8011
 
